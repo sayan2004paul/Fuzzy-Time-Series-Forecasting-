@@ -23,6 +23,8 @@ df = df[(df['date'] >= start_date) & (df['date'] <= end_date)]
 
 
 
+
+
 df
 
 # Plot the closing prices
