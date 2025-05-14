@@ -1,0 +1,451 @@
+
+
+import pandas as pd
+
+nifty= pd.read_csv("/content/NIFTY 50_daily_data.csv")  # Replace with your actual filename
+nasdaq = pd.read_csv("/content/nasdq.csv")
+
+nifty_df.head()
+
+nasdaq_df.head()
+
+# Convert both to datetime with consistent format (ignoring time for now)
+nasdaq_df['date'] = pd.to_datetime(nasdaq_df['date'], format='%d-%m-%Y')
+nifty_df['date'] = pd.to_datetime(nifty_df['date'], format='%d-%m-%Y %H:%M')
+
+
+
+
+
+nifty= pd.read_csv("/content/NIFTY 50_daily_data.csv")  # Replace with your actual filename
+nasdaq = pd.read_csv("/content/nasdq.csv")
+
+
+
+
+
+
+
+nifty_df= pd.read_csv("/content/NIFTY 50_daily_data.csv")  # Replace with your actual filename
+nasdaq_df = pd.read_csv("/content/nasdq.csv")
+
+# with nasdaq
+
+import numpy as np
+import pandas as pd
+from sklearn.preprocessing import MinMaxScaler
+import matplotlib.pyplot as plt
+from datetime import datetime
+
+
+
+    # Select the 'Close' prices
+nifty_close = nifty_df['close'].dropna()
+nasdaq_close = nasdaq_df['close'].dropna()
+
+    # Align the dates
+common_dates = nifty_close.index.intersection(nasdaq_close.index)
+nifty_close = nifty_close.loc[common_dates]
+nasdaq_close = nasdaq_close.loc[common_dates]
+
+    # Calculate daily returns
+nifty_returns = nifty_close.pct_change().dropna()
+nasdaq_returns = nasdaq_close.pct_change().dropna()
+
+    # Scale the returns to a suitable range for fuzzy sets (e.g., -1 to 1)
+scaler = MinMaxScaler(feature_range=(-1, 1))
+nifty_returns_scaled = scaler.fit_transform(nifty_returns.values.reshape(-1, 1))
+nasdaq_returns_scaled = scaler.transform(nasdaq_returns.values.reshape(-1, 1))
+
+nifty_returns_scaled = pd.Series(nifty_returns_scaled.flatten(), index=nifty_returns.index)
+nasdaq_returns_scaled = pd.Series(nasdaq_returns_scaled.flatten(), index=nasdaq_returns.index)
+
+#return nifty_returns_scaled, nasdaq_returns_scaled, nifty_close, scaler
+
+# --- 2. Interval Type-2 Fuzzy Set Class ---
+class IT2FuzzySet:
+    def __init__(self, name, lower_params, upper_params):
+        """
+        lower_params: (a_lower, b_lower, c_lower, d_lower) for trapezoid
+        upper_params: (a_upper, b_upper, c_upper, d_upper)
+        """
+        self.name = name
+        self.lower_params = lower_params
+        self.upper_params = upper_params
+
+    def compute_interval(self, x):
+        """Calculate [lower_mf, upper_mf] membership values using trapezoidal MF."""
+        def trapezoid(x, params):
+            a, b, c, d = params
+            if x <= a or x >= d: return 0
+            elif a < x <= b: return (x - a) / (b - a)
+            elif b < x <= c: return 1
+            else: return (d - x) / (d - c)
+
+        lower_mf = trapezoid(x, self.lower_params)
+        upper_mf = trapezoid(x, self.upper_params)
+        return (lower_mf, upper_mf)
+
+# --- 3. Define IT2 Fuzzy Sets for Returns ---
+# These parameters need careful tuning based on your data characteristics
+low = IT2FuzzySet("Low", (-0.15, -0.08, -0.03, 0.01), (-0.2, -0.1, -0.01, 0.02))
+medium = IT2FuzzySet("Medium", (-0.02, 0, 0, 0.02), (-0.04, -0.01, 0.01, 0.04))
+high = IT2FuzzySet("High", (-0.01, 0.03, 0.08, 0.15), (-0.02, 0.01, 0.1, 0.2))
+
+# --- 4. Fuzzy Inference System ---
+def it2_forecast_return(nifty_return, nasdaq_return):
+    """Fuzzy inference system for forecasting the direction of NIFTY return."""
+    # Fuzzify inputs
+    nifty_fuzz = {
+        'Low': low.compute_interval(nifty_return),
+        'Medium': medium.compute_interval(nifty_return),
+        'High': high.compute_interval(nifty_return)
+    }
+
+    nasdaq_fuzz = {
+        'Low': low.compute_interval(nasdaq_return),
+        'Medium': medium.compute_interval(nasdaq_return),
+        'High': high.compute_interval(nasdaq_return)
+    }
+
+    # Rule Base (NIFTY_t, NASDAQ_t) -> NIFTY_t+1 (Direction of Change)
+    # These rules are crucial and need to be designed based on market intuition
+    rules = {
+        ('Low', 'Low'): 'Low',
+        ('Low', 'Medium'): 'Low',
+        ('Low', 'High'): 'Medium',
+        ('Medium', 'Low'): 'Low',
+        ('Medium', 'Medium'): 'Medium',
+        ('Medium', 'High'): 'High',
+        ('High', 'Low'): 'Medium',
+        ('High', 'Medium'): 'High',
+        ('High', 'High'): 'High',
+    }
+
+    # Inference and Type-1 Fuzzy Output Intervals
+    output_intervals = []
+    for (n_term, nasdaq_term), out_term in rules.items():
+        n_lower, n_upper = nifty_fuzz[n_term]
+        nasdaq_lower, nasdaq_upper = nasdaq_fuzz[nasdaq_term]
+
+        # Meet operation (minimum for AND)
+        firing_strength_lower = min(n_lower, nasdaq_lower)
+        firing_strength_upper = min(n_upper, nasdaq_upper)
+
+        # Consequent (simplified - using the same fuzzy sets for output)
+        if out_term == 'Low':
+            output_intervals.append(('Low', (firing_strength_lower * low.lower_params[2], firing_strength_upper * low.upper_params[2]))) # Using 'c' parameter as representative
+        elif out_term == 'Medium':
+            output_intervals.append(('Medium', (firing_strength_lower * medium.lower_params[2], firing_strength_upper * medium.upper_params[2])))
+        elif out_term == 'High':
+            output_intervals.append(('High', (firing_strength_lower * high.lower_params[2], firing_strength_upper * high.upper_params[2])))
+
+    # Type Reduction (Simplified - Average of weighted midpoints)
+    if not output_intervals:
+        return 0  # Handle case with no active rules
+
+    weighted_sum = 0
+    sum_of_weights = 0
+    for term, (lower_bound, upper_bound) in output_intervals:
+        midpoint = (lower_bound + upper_bound) / 2
+        weight = (lower_bound + upper_bound) / 2 # Using midpoint as weight (can be refined)
+        weighted_sum += weight * midpoint
+        sum_of_weights += weight
+
+    if sum_of_weights == 0:
+        return 0
+
+    crisp_output_return = weighted_sum / sum_of_weights
+    return crisp_output_return
+
+# --- 5. Forecasting Loop ---
+def forecast_nifty_close(nifty_returns_scaled, nasdaq_returns_scaled, nifty_close, lookback_period=5):
+    """Forecasts the NIFTY close price."""
+    forecasted_closes = []
+    actual_closes = nifty_close[lookback_period:].tolist()
+    history_nifty = nifty_returns_scaled.tolist()
+    history_nasdaq = nasdaq_returns_scaled.tolist()
+    dates = nifty_returns_scaled.index[lookback_period:]
+
+    for i in range(lookback_period, len(nifty_returns_scaled)):
+        nifty_past_return = np.mean(history_nifty[i-lookback_period:i])
+        nasdaq_past_return = np.mean(history_nasdaq[i-lookback_period:i])
+
+        # Forecast the return direction/magnitude
+        predicted_return = it2_forecast_return(nifty_past_return, nasdaq_past_return)
+
+        # Apply the predicted return to the previous close price
+        previous_close = nifty_close.iloc[i-1]
+        forecasted_close = previous_close * (1 + predicted_return)
+        forecasted_closes.append(forecasted_close)
+
+    forecasted_series = pd.Series(forecasted_closes, index=dates)
+    return actual_closes, forecasted_series
+
+# --- 6. Evaluation (Simple Mean Squared Error) ---
+def evaluate_forecast(actual, predicted):
+    """Evaluates the forecast using Mean Squared Error."""
+
+from sklearn.metrics import mean_squared_error
+
+#mse = mean_squared_error(actual, predicted)
+#print(f"Mean Squared Error: {mse:.6f}")
+#return mse
+
+# --- 7. Plotting Results ---
+def plot_forecast(actual, predicted):
+    """Plots the actual and forecasted NIFTY close prices."""
+    plt.figure(figsize=(12, 6))
+    plt.plot(actual.index, actual.values, label='Actual NIFTY Close Price', color='blue')
+    plt.plot(predicted.index, predicted.values, label='Forecasted NIFTY Close Price', color='red')
+    plt.title('NIFTY Close Price Forecast using Interval Type-2 Fuzzy System')
+    plt.xlabel('Date')
+    plt.ylabel('Close Price')
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+
+# --- 1. Data Loading and Preprocessing ---
+def load_and_preprocess_data(nifty_file, nasdaq_file):
+    """Loads NIFTY and NASDAQ data, preprocesses it for forecasting."""
+    # ... (function body)
+    return nifty_returns_scaled, nasdaq_returns_scaled, nifty_close, scaler
+
+# ... (other function and class definitions)
+
+# --- 8. Main Execution ---
+if __name__ == "__main__":
+    # Replace 'nifty_data.csv' and 'nasdaq_data.csv' with the actual file paths
+    nifty_returns_scaled, nasdaq_returns_scaled, nifty_close_prices, scaler = load_and_preprocess_data('NIFTY_50_Data.csv', 'NASDAQ_Data.csv')
+    # ... (rest of the main execution block)
+
+    if nifty_returns_scaled is not None and nasdaq_returns_scaled is not None:
+        actual_closes, forecasted_closes = forecast_nifty_close(nifty_returns_scaled, nasdaq_returns_scaled, nifty_close_prices)
+
+        if forecasted_closes is not None and not forecasted_closes.empty:
+            evaluate_forecast(actual_closes, forecasted_closes.tolist())
+            plot_forecast(nifty_close_prices[5:], forecasted_closes)
+        else:
+            print("Error: No forecasts generated.")
+
+mse = mean_squared_error(actual_closes, forecasted_closes)
+mae = mean_absolute_error(actual_closes, forecasted_closes)
+rmse = np.sqrt(mse)
+mse,mae,rmse
+
+
+
+
+
+
+
+
+
+# without nasdaq
+
+import numpy as np
+import pandas as pd
+from sklearn.preprocessing import MinMaxScaler
+import matplotlib.pyplot as plt
+from datetime import datetime
+from sklearn.metrics import mean_squared_error, mean_absolute_error
+
+# --- 1. Data Loading and Preprocessing ---
+def load_and_preprocess_data(nifty_file):
+    """Loads NIFTY data, preprocesses it for forecasting."""
+    try:
+        #nifty_df = pd.read_csv(nifty_file, index_col='Date', parse_dates=True)  # Load the data
+        # Select the 'Close' prices
+        nifty_close = nifty_df['close'].dropna()
+        # Calculate daily returns
+        nifty_returns = nifty_close.pct_change().dropna()
+        # Scale the returns to a suitable range for fuzzy sets (e.g., -1 to 1)
+        scaler = MinMaxScaler(feature_range=(-1, 1))
+        nifty_returns_scaled = scaler.fit_transform(nifty_returns.values.reshape(-1, 1))
+        nifty_returns_scaled = pd.Series(nifty_returns_scaled.flatten(), index=nifty_returns.index)
+        return nifty_returns_scaled, nifty_close, scaler
+    except FileNotFoundError:
+        print("Error: NIFTY data file not found.")
+        return None, None, None
+
+# --- 2. Interval Type-2 Fuzzy Set Class ---
+class IT2FuzzySet:
+    def __init__(self, name, lower_params, upper_params):
+        """
+        lower_params: (a_lower, b_lower, c_lower, d_lower) for trapezoid
+        upper_params: (a_upper, b_upper, c_upper, d_upper)
+        """
+        self.name = name
+        self.lower_params = lower_params
+        self.upper_params = upper_params
+
+    def compute_interval(self, x):
+        """Calculate [lower_mf, upper_mf] membership values using trapezoidal MF."""
+        def trapezoid(x, params):
+            a, b, c, d = params
+            if x <= a or x >= d: return 0
+            elif a < x <= b: return (x - a) / (b - a)
+            elif b < x <= c: return 1
+            else: return (d - x) / (d - c)
+        lower_mf = trapezoid(x, self.lower_params)
+        upper_mf = trapezoid(x, self.upper_params)
+        return (lower_mf, upper_mf)
+
+# --- 3. Define IT2 Fuzzy Sets for Returns ---
+# These parameters need careful tuning based on your data characteristics
+low = IT2FuzzySet("Low", (-0.15, -0.08, -0.03, 0.01), (-0.2, -0.1, -0.01, 0.02))
+medium = IT2FuzzySet("Medium", (-0.02, 0, 0, 0.02), (-0.04, -0.01, 0.01, 0.04))
+high = IT2FuzzySet("High", (-0.01, 0.03, 0.08, 0.15), (-0.02, 0.01, 0.1, 0.2))
+
+# --- 4. Fuzzy Inference System ---
+def it2_forecast_return(nifty_return):
+    """Fuzzy inference system for forecasting the direction of NIFTY return."""
+    # Fuzzify inputs
+    nifty_fuzz = {
+        'Low': low.compute_interval(nifty_return),
+        'Medium': medium.compute_interval(nifty_return),
+        'High': high.compute_interval(nifty_return)
+    }
+    # Rule Base (NIFTY_t) -> NIFTY_t+1 (Direction of Change)
+    # These rules are crucial and need to be designed based on market intuition
+    rules = {
+        'Low': 'Low',
+        'Medium': 'Medium',
+        'High': 'High',
+    }
+    # Inference and Type-1 Fuzzy Output Intervals
+    output_intervals = []
+    for n_term, out_term in rules.items():
+        n_lower, n_upper = nifty_fuzz[n_term]
+        # Firing strength is just the membership degree
+        firing_strength_lower = n_lower
+        firing_strength_upper = n_upper
+        # Consequent (simplified - using the same fuzzy sets for output)
+        if out_term == 'Low':
+            output_intervals.append(('Low', (firing_strength_lower * low.lower_params[2], firing_strength_upper * low.upper_params[2]))) # Using 'c' parameter as representative
+        elif out_term == 'Medium':
+            output_intervals.append(('Medium', (firing_strength_lower * medium.lower_params[2], firing_strength_upper * medium.upper_params[2])))
+        elif out_term == 'High':
+            output_intervals.append(('High', (firing_strength_lower * high.lower_params[2], firing_strength_upper * high.upper_params[2])))
+    # Type Reduction (Simplified - Average of weighted midpoints)
+    if not output_intervals:
+        return 0  # Handle case with no active rules
+    weighted_sum = 0
+    sum_of_weights = 0
+    for term, (lower_bound, upper_bound) in output_intervals:
+        midpoint = (lower_bound + upper_bound) / 2
+        weight = (lower_bound + upper_bound) / 2 # Using midpoint as weight (can be refined)
+        weighted_sum += weight * midpoint
+        sum_of_weights += weight
+    if sum_of_weights == 0:
+        return 0
+    crisp_output_return = weighted_sum / sum_of_weights
+    return crisp_output_return
+
+# --- 5. Forecasting Loop ---
+def forecast_nifty_close(nifty_returns_scaled, nifty_close, lookback_period=5):
+    """Forecasts the NIFTY close price."""
+    forecasted_closes = []
+    actual_closes = nifty_close[lookback_period:].tolist()
+    history_nifty = nifty_returns_scaled.tolist()
+    dates = nifty_returns_scaled.index[lookback_period:]
+    for i in range(lookback_period, len(nifty_returns_scaled)):
+        nifty_past_return = np.mean(history_nifty[i-lookback_period:i])
+        # Forecast the return direction/magnitude
+        predicted_return = it2_forecast_return(nifty_past_return)
+        # Apply the predicted return to the previous close price
+        previous_close = nifty_close.iloc[i-1]
+        forecasted_close = previous_close * (1 + predicted_return)
+        forecasted_closes.append(forecasted_close)
+    forecasted_series = pd.Series(forecasted_closes, index=dates)
+    actual_closes_series = nifty_close[lookback:]  # Changed to Series
+    return actual_closes_series, forecasted_series
+
+# --- 6. Evaluation ---
+def calculate_error_metrics(actual_series, predicted_series):
+    """
+    Calculates Mean Squared Error (MSE), Mean Absolute Error (MAE), and
+    Root Mean Squared Error (RMSE) for two Pandas Series, ensuring they
+    are aligned by their index.
+
+    Args:
+        actual_series (pd.Series): A Pandas Series of actual values.
+        predicted_series (pd.Series): A Pandas Series of predicted values.
+
+    Returns:
+        tuple: A tuple containing (MAE, MSE, RMSE).  Returns (None, None, None)
+               if the input Series are empty or cannot be aligned.
+    """
+    if not isinstance(actual_series, pd.Series) or not isinstance(predicted_series, pd.Series):
+        print("Error: Input must be Pandas Series.")
+        return None, None, None
+
+    if actual_series.empty or predicted_series.empty:
+        print("Error: Input Series cannot be empty.")
+        return None, None, None
+
+    # Align the Series by their index, dropping any NaN values that result
+    comparison_df = pd.DataFrame({'actual': actual_series, 'predicted': predicted_series}).dropna()
+
+    if comparison_df.empty:
+        print("Error: No overlapping indices between actual and predicted Series.")
+        return None, None, None
+
+    actual_aligned = comparison_df['actual']
+    predicted_aligned = comparison_df['predicted']
+
+    mse = mean_squared_error(actual_aligned, predicted_aligned)
+    mae = mean_absolute_error(actual_aligned, predicted_aligned)
+    rmse = np.sqrt(mse)
+
+    return mae, mse, rmse
+
+# --- 7. Plotting Results ---
+def plot_forecast(actual, predicted):
+    """Plots the actual and forecasted NIFTY close prices."""
+    plt.figure(figsize=(12, 6))
+    plt.plot(actual.index, actual.values, label='Actual NIFTY Close Price', color='blue')
+    plt.plot(predicted.index, predicted.values, label='Forecasted NIFTY Close Price', color='red')
+    plt.title('NIFTY Close Price Forecast using Interval Type-2 Fuzzy System')
+    plt.xlabel('Date')
+    plt.ylabel('Close Price')
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+
+# --- 1. Data Loading and Preprocessing ---
+def load_and_preprocess_data(nifty_file):
+    """Loads NIFTY data, preprocesses it for forecasting."""
+    try:
+        #nifty_df = pd.read_csv(nifty_file, index_col='Date', parse_dates=True) #load the data
+        # Select the 'Close' prices
+        nifty_close = nifty_df['close'].dropna()
+        # Calculate daily returns
+        nifty_returns = nifty_close.pct_change().dropna()
+        # Scale the returns to a suitable range for fuzzy sets (e.g., -1 to 1)
+        scaler = MinMaxScaler(feature_range=(-1, 1))
+        nifty_returns_scaled = scaler.fit_transform(nifty_returns.values.reshape(-1, 1))
+        nifty_returns_scaled = pd.Series(nifty_returns_scaled.flatten(), index=nifty_returns.index)
+        return nifty_returns_scaled, nifty_close, scaler
+    except FileNotFoundError:
+        print("Error: NIFTY data file not found.")
+        return None, None, None
+
+# --- 8. Main Execution ---
+if __name__ == "__main__":
+    # Replace 'nifty_data.csv' with the actual file path
+    nifty_returns_scaled, nifty_close_prices, scaler = load_and_preprocess_data('NIFTY_50_Data.csv')
+    # ... (rest of the main execution block)
+
+    if nifty_returns_scaled is not None:
+        actual_closes_series, forecasted_closes_series = forecast_nifty_close(nifty_returns_scaled, nifty_close_prices)
+
+        if forecasted_closes_series is not None and not forecasted_closes_series.empty:
+            mae, mse, rmse = calculate_error_metrics(actual_closes_series, forecasted_closes_series) #use the function
+            if mae is not None:
+                print(f"MAE: {mae:.4f}")
+                print(f"MSE: {mse:.4f}")
+                print(f"RMSE: {rmse:.4f}")
+            plot_forecast(nifty_close_prices[5:], forecasted_closes_series)
+        else:
+            print("Error: No forecasts generated.")
